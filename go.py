@@ -2,9 +2,17 @@ import os
 import sys
 import cv2
 import pygame
+import threading
+
 from time import time
+from threading import Lock
 from ultralytics import YOLO
 from ultralytics.utils.plotting import Annotator
+
+
+latest_frame = None
+last_ret = None
+lo = Lock()
 
 pygame.mixer.init()
 pygame.mixer.music.load("dogatdoor.wav")
@@ -19,15 +27,34 @@ if not cap.isOpened():
     print('Error opening video stream or file')
     sys.exit()
 
+
+def rtsp_cam_buffer(vcap):
+    global latest_frame, lo, last_ret
+    while True:
+        with lo:
+            last_ret, latest_frame = vcap.read()
+
+
+t1 = threading.Thread(target=rtsp_cam_buffer,
+                      args=(cap, ),
+                      name="rtsp_read_thread")
+t1.daemon = True
+t1.start()
+
 # Now load the model.  This takes a while
 model = YOLO('models/yolov8n.pt')
 
-
-last_announce = time() - 20
+announce_delay = 8
+trigger_names = ['dog', 'cow']
+last_announce = time() - announce_delay
 while True:
-    ret, data = cap.read()
-    data = cv2.resize(data, (640, 480))
-    results = model(data)
+    if (last_ret is not None) and (latest_frame is not None):
+        ret = last_ret
+        data = latest_frame
+    else:
+        continue
+    data = cv2.resize(data, (1024, 720))
+    results = model(data, verbose=False)
     for r in results:
         annotator = Annotator(data)
         boxes = r.boxes
@@ -35,15 +62,15 @@ while True:
             b = box.xyxy[0]  # get box coordinates in (left, top, right, bottom) format
             c = box.cls
             name = model.names[int(c)]
-            print(name)
             annotator.box_label(b, name)
             curr_time = time()
-            if curr_time - last_announce > 20:
-                last_announce = curr_time
-                if name == 'car' or name == 'truck':
+            diff = int(curr_time - last_announce)
+            if name in trigger_names:
+                if diff > announce_delay:
+                    last_announce = curr_time
                     pygame.mixer.music.play()
-                    while pygame.mixer.music.get_busy():
-                        pass
+                else:
+                    print(f"Too soon {announce_delay - diff} to go")
     img = annotator.result()
 
     cv2.imshow('cam', img)
